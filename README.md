@@ -4,14 +4,18 @@
 
 | Script | Τι κάνει |
 |---|---|
-| `Get-LaptopHealth.ps1` | Έλεγχος δίσκου, RAM, uptime, μπαταρίας και Windows Update σε laptop |
+| `Get-LaptopHealth.ps1` | Έλεγχος RAM, δίσκου, τελευταίας επανεκκίνησης, μπαταρίας, Windows Update, Dell BIOS και Dell updates |
 
 ## Χρήση
 
 ```powershell
-.\Get-LaptopHealth.ps1
-.\Get-LaptopHealth.ps1 -MinFreeDiskPercent 20 -MaxUptimeDays 7
+.\Get-LaptopHealth.ps1                                   # βασικός έλεγχος
+.\Get-LaptopHealth.ps1 -DellScan                          # + έλεγχος Dell updates (ως Administrator)
+.\Get-LaptopHealth.ps1 -CsvPath "$env:USERPROFILE\Desktop\laptop-health.csv"   # + αποθήκευση σε CSV
+.\Get-LaptopHealth.ps1 -MaxUptimeDays 7 -MinFreeDiskPercent 25                 # δικά σου όρια
 ```
+
+Για το `-DellScan` χρειάζεται εγκατεστημένο **Dell Command | Update**.
 
 ## Κανόνες
 
