@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Έλεγχος υγείας laptop: μνήμη, δίσκος, επανεκκίνηση, μπαταρία, power mode, Windows Update, Dell BIOS/updates.
 
