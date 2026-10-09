@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Έλεγχος υγείας laptop: μνήμη, δίσκος, επανεκκίνηση, μπαταρία, Windows Update, Dell BIOS/updates.
+    Έλεγχος υγείας laptop: μνήμη, δίσκος, επανεκκίνηση, μπαταρία, power mode, Windows Update, Dell BIOS/updates.
 
 .DESCRIPTION
     Μόνο ανάγνωση. Δεν εγκαθιστά και δεν αλλάζει τίποτα στο σύστημα.
@@ -20,6 +20,7 @@ param(
     [int]$MinFreeRamPercent  = 10,
     [int]$MaxUptimeDays      = 14,
     [int]$MaxUpdateAgeDays   = 45,
+    [int]$MinBatteryHealthPercent = 70,
     [switch]$DellScan,
     [string]$CsvPath
 )
@@ -54,9 +55,69 @@ if ($diskFreePct -lt $MinFreeDiskPercent) {
     $warnings += "Ελεύθερος χώρος δίσκου $diskFreePct% (< $MinFreeDiskPercent%)."
 }
 
-# --- Μπαταρία ---
-$battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
-$batteryText = if ($battery) { "$($battery.EstimatedChargeRemaining)%" } else { "Δεν βρέθηκε" }
+# --- Μπαταρία: φόρτιση, τροφοδοσία, υγεία ---
+$battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+$batteryText = "Δεν βρέθηκε"
+$powerSource = "Ρεύμα (χωρίς μπαταρία)"
+$batteryHealthText = "-"
+if ($battery) {
+    $batteryText = "$($battery.EstimatedChargeRemaining)%"
+    $powerSource = switch ([int]$battery.BatteryStatus) {
+        1       { "Μπαταρία" }
+        2       { "Ρεύμα" }
+        3       { "Ρεύμα (πλήρως φορτισμένη)" }
+        { $_ -in 6, 7, 8, 9 } { "Ρεύμα (φορτίζει)" }
+        4       { "Μπαταρία (χαμηλή)" }
+        5       { "Μπαταρία (κρίσιμη)" }
+        default { "Άγνωστο" }
+    }
+    try {
+        $design = (Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction Stop |
+            Select-Object -First 1).DesignedCapacity
+        $full   = (Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop |
+            Select-Object -First 1).FullChargedCapacity
+        if ($design -gt 0 -and $full -gt 0) {
+            $healthPct = [math]::Round(($full / $design) * 100, 0)
+            $batteryHealthText = "$healthPct% της αρχικής χωρητικότητας"
+            if ($healthPct -lt $MinBatteryHealthPercent) {
+                $warnings += "Η μπαταρία έχει φθαρεί: $healthPct% της αρχικής χωρητικότητας."
+            }
+        }
+    } catch {
+        $batteryHealthText = "Μη διαθέσιμο"
+    }
+}
+
+# --- Λειτουργία ενέργειας (Power mode) & σχέδιο ενέργειας ---
+$powerModeNames = @{
+    '961cc777-2547-4f9d-8174-7d86181b8a7a' = 'Καλύτερη απόδοση ενέργειας (Best power efficiency)'
+    '00000000-0000-0000-0000-000000000000' = 'Ισορροπημένη (Balanced)'
+    'ded574b5-45a0-4f42-8737-46345c09c238' = 'Καλύτερη απόδοση (Best performance)'
+}
+$schemesKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'
+$schemes = Get-ItemProperty -Path $schemesKey -ErrorAction SilentlyContinue
+
+function Get-PowerModeName([string]$guid) {
+    if ([string]::IsNullOrWhiteSpace($guid)) { return 'Ισορροπημένη (Balanced)' }
+    $key = $guid.ToLower()
+    if ($powerModeNames.ContainsKey($key)) { return $powerModeNames[$key] }
+    return "Άγνωστη ($guid)"
+}
+$powerModeAc = Get-PowerModeName $schemes.ActiveOverlayAcPowerSchemeGuid
+$powerModeDc = Get-PowerModeName $schemes.ActiveOverlayDcPowerSchemeGuid
+
+$activePlan = Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan -Filter 'IsActive = TRUE' `
+    -ErrorAction SilentlyContinue | Select-Object -First 1
+$powerPlanText = if ($activePlan) { $activePlan.ElementName } else { "Άγνωστο" }
+
+# --- Fast Startup ---
+$hiberboot = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' `
+    -Name HiberbootEnabled -ErrorAction SilentlyContinue).HiberbootEnabled
+$fastStartupText = switch ($hiberboot) {
+    1       { "Ενεργό (ο τερματισμός ΔΕΝ μετράει ως restart)" }
+    0       { "Ανενεργό" }
+    default { "Άγνωστο" }
+}
 
 # --- Τελευταίο Windows Update ---
 $lastHotfix = Get-HotFix -ErrorAction SilentlyContinue |
@@ -139,6 +200,12 @@ $result = [PSCustomObject][ordered]@{
     'RAM ελεύθερη (GB)'      = "$freeRamGB / $totalRamGB ($freeRamPct%)"
     'Δίσκος ελεύθερος (GB)'  = "$diskFreeGB / $diskTotalGB ($diskFreePct%)"
     'Μπαταρία'               = $batteryText
+    'Τροφοδοσία'             = $powerSource
+    'Υγεία μπαταρίας'        = $batteryHealthText
+    'Power mode (στο ρεύμα)' = $powerModeAc
+    'Power mode (μπαταρία)'  = $powerModeDc
+    'Σχέδιο ενέργειας'       = $powerPlanText
+    'Fast Startup'           = $fastStartupText
     'Τελ. Windows Update'    = $lastWinUpdate
     'BIOS'                   = $biosText
     'Dell updates'           = $dellUpdatesText
