@@ -13,7 +13,7 @@
 
 [CmdletBinding()]
 param(
-    [int]$MinFreeDiskPercent = 15,
+    [int]$MinFreeDiskPercent = 20,
     [int]$MaxUptimeDays = 14
 )
 
